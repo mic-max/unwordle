@@ -1,6 +1,5 @@
-const ACCEPTED    = require('./res/accepted.js');
+const ACCEPTED    = require('./res/words.js');
 const SOLUTIONS   = require('./res/solutions.js');
-const FREQUENCIES = require('./res/frequencies.js');
 
 const MISS = 0;
 const WRONG_POSITION = 1;
@@ -165,7 +164,7 @@ function scorePath(path) {
 	const weights = [1, 1, .9, .8, .5, .5];
 	for (let i = 0; i < path.length; i++) {
 		const word = path[i];
-		const freq = FREQUENCIES[word] || 0;
+		const freq = ACCEPTED[word] || 0;
 
 		score += Math.pow(freq, 2) * weights[i];
 
@@ -189,7 +188,7 @@ function main(example) {
 	
 	// Compute the score for every single word in ACCEPTED
 	let scores = {};
-	for (let accept of ACCEPTED) {
+	for (let accept in ACCEPTED) {
 		scores[accept] = scoreGuess(accept, answer);
 	}
 	
