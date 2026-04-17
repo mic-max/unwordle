@@ -3539,6 +3539,8 @@ for (let line of lines.trim().split('\n')) {
     const word = line.substring(spaceOne + 1, spaceTwo)
     res.unshift(word.toLowerCase())
 }
-process.stdout.write("module.exports = [")
-for (let line of res)
-    process.stdout.write(`"${line}",`)
+
+const body = res.map(word => `  "${word}"`).join(',\n');
+console.log('module.exports = [');
+console.log(body);
+console.log('];');
