@@ -3,6 +3,10 @@ WebAssembly
 
 creates a graph
 
+attempt to parse the wordle scorecard input field onchange.
+- have a button to load an example scorecard. easier testing and for people on the site just playing around with it.
+- have multiple examples you can switch between
+
 when the user clicks on a starting word it can only show the paths from that word
 - for example, i know some people who use the same first word each time and this can help find a more probably path they took
 

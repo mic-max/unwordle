@@ -228,6 +228,7 @@ class WordBuffer {
 		// Precompute all letter values into a flat Uint8Array so letters(i) is a
 		// zero-copy subarray view rather than a bit-unpack on every call.
 		this._lettersFlat = new Uint8Array(this.wordCount * 5);
+		this._uniqueCount = new Uint8Array(this.wordCount);
 		for (let i = 0; i < this.wordCount; i++) {
 			const e = this._view.getUint32(4 + i * 4, true);
 			const base = i * 5;
@@ -236,6 +237,13 @@ class WordBuffer {
 			this._lettersFlat[base + 2] = (e >> 10) & 0x1F;
 			this._lettersFlat[base + 3] = (e >> 15) & 0x1F;
 			this._lettersFlat[base + 4] = (e >> 20) & 0x1F;
+			// popcount of unique letters via bitmask (max 5 bits set)
+			let bits = (1 << this._lettersFlat[base])     | (1 << this._lettersFlat[base + 1]) |
+			           (1 << this._lettersFlat[base + 2]) | (1 << this._lettersFlat[base + 3]) |
+			           (1 << this._lettersFlat[base + 4]);
+			let n = 0;
+			while (bits) { n++; bits &= bits - 1; }
+			this._uniqueCount[i] = n;
 		}
 	}
 
@@ -284,19 +292,17 @@ class WordBuffer {
 		return this.scoreGuessVs(guessIdx, this.letters(answerIdx));
 	}
 
-	// Score a path of word indices using their encoded frequencies
+	// Score a path of word indices — returns score × 1000 as an integer
 	scorePath(path) {
 		let score = 0;
 		const weights    = [1, 1, .9, .8, .5, .5];
 		const posWeights = [1, 0.8, 0.6, 0.2, 0.1, 0.1];
 		for (let i = 0; i < path.length; i++) {
-			const f  = this.freq(path[i]);
-			const ls = this.letters(path[i]);
+			const f = this.freq(path[i]);
 			score += f * f * weights[i];
-			const uniq = new Set([ls[0], ls[1], ls[2], ls[3], ls[4]]);
-			score -= (5 - uniq.size) * 20.0 * posWeights[i];
+			score -= (5 - this._uniqueCount[path[i]]) * 20.0 * posWeights[i];
 		}
-		return score;
+		return Math.round(score * 1000);
 	}
 
 	// --- constraint helpers (integer letter values as keys, not chars) ---
@@ -350,26 +356,119 @@ class WordBuffer {
 	}
 
 	findValidCandidates(pools, guesses) {
-		const valid = pools.map(() => new Set());
-		const paths = [];
-		const dfs   = (poolIdx, constraints, path) => {
+		const valid    = pools.map(() => new Set());
+		const pathFlat = [];  // flat list of guess indices, answer excluded
+		const path     = [];
+
+		// Mutable constraint state — never reallocated during search
+		const required  = new Int8Array(5).fill(-1);  // -1 = no requirement
+		const forbidden = new Uint32Array(5);          // bitmask: bit l = letter l forbidden
+		const minCount  = new Uint8Array(26);
+		const maxCount  = new Int8Array(26).fill(-1);  // -1 = no limit
+
+		// Flat undo log: interleaved (slot, prevValue) pairs written on apply, read in
+		// reverse on restore.  slot encoding: 0-4 = required, 5-9 = forbidden,
+		// 10-35 = minCount[slot-10], 36-61 = maxCount[slot-36]
+		const undoLog = new Int32Array(500);
+		let logPtr = 0;
+
+		// Reusable scratch buffers — never allocated inside the hot loop
+		const _tempMin = new Uint8Array(26);
+		const _counts  = new Uint8Array(26);
+
+		const satisfies = (letters) => {
+			for (let i = 0; i < 5; i++) {
+				if (required[i] !== -1 && letters[i] !== required[i]) return false;
+				if (forbidden[i] & (1 << letters[i])) return false;
+			}
+			_counts[letters[0]]++; _counts[letters[1]]++; _counts[letters[2]]++;
+			_counts[letters[3]]++; _counts[letters[4]]++;
+			let ok = true;
+			for (let l = 0; l < 26; l++) {
+				if (minCount[l] > 0 && _counts[l] < minCount[l]) { ok = false; break; }
+				if (maxCount[l] !== -1 && _counts[l] > maxCount[l]) { ok = false; break; }
+			}
+			_counts[letters[0]]--; _counts[letters[1]]--; _counts[letters[2]]--;
+			_counts[letters[3]]--; _counts[letters[4]]--;
+			return ok;
+		};
+
+		const applyGuess = (letters, score) => {
+			const mark = logPtr;
+			let touchedBits = 0, grayBits = 0;
+			for (let i = 0; i < 5; i++) {
+				const l = letters[i];
+				touchedBits |= 1 << l;
+				if (score[i] === CORRECT || score[i] === WRONG_POSITION) _tempMin[l]++;
+				else grayBits |= 1 << l;
+			}
+			for (let i = 0; i < 5; i++) {
+				if (score[i] === CORRECT && required[i] !== letters[i]) {
+					undoLog[logPtr++] = i; undoLog[logPtr++] = required[i];
+					required[i] = letters[i];
+				} else if (score[i] === WRONG_POSITION) {
+					const bit = 1 << letters[i];
+					if (!(forbidden[i] & bit)) {
+						undoLog[logPtr++] = 5 + i; undoLog[logPtr++] = forbidden[i];
+						forbidden[i] |= bit;
+					}
+				}
+			}
+			for (let l = 0; l < 26; l++) {
+				if (!((touchedBits >> l) & 1)) continue;
+				const tm = _tempMin[l];
+				_tempMin[l] = 0; // clear scratch for reuse
+				if (tm > minCount[l]) {
+					undoLog[logPtr++] = 10 + l; undoLog[logPtr++] = minCount[l];
+					minCount[l] = tm;
+				}
+				if ((grayBits >> l) & 1 && (maxCount[l] === -1 || tm < maxCount[l])) {
+					undoLog[logPtr++] = 36 + l; undoLog[logPtr++] = maxCount[l];
+					maxCount[l] = tm;
+				}
+			}
+			return mark;
+		};
+
+		const undoTo = (mark) => {
+			while (logPtr > mark) {
+				logPtr -= 2;
+				const slot = undoLog[logPtr], prev = undoLog[logPtr + 1];
+				if      (slot <  5) required[slot]       = prev;
+				else if (slot < 10) forbidden[slot - 5]  = prev;
+				else if (slot < 36) minCount[slot - 10]  = prev;
+				else                maxCount[slot - 36]  = prev;
+			}
+		};
+
+		const dfs = (poolIdx) => {
 			if (poolIdx === pools.length) {
-				for (let i = 0; i < path.length; i++) valid[i].add(path[i]);
-				paths.push([...path]);
+				// path includes the answer at the end — record valid indices but exclude it from pathFlat
+				for (let i = 0; i < path.length - 1; i++) valid[i].add(path[i]);
+				for (let i = 0; i < path.length - 1; i++) pathFlat.push(path[i]);
 				return;
 			}
 			for (const wi of pools[poolIdx]) {
 				const letters = this.letters(wi);
-				if (!this._satisfiesConstraints(letters, constraints)) continue;
+				if (!satisfies(letters)) continue;
+				const mark = applyGuess(letters, guesses[poolIdx]);
 				path.push(wi);
-				dfs(poolIdx + 1,
-					mergeConstraints(constraints, this._extractConstraints(letters, guesses[poolIdx])),
-					path);
+				dfs(poolIdx + 1);
 				path.pop();
+				undoTo(mark);
 			}
 		};
-		dfs(0, emptyConstraints(), []);
-		return { pools: pools.map((pool, i) => pool.filter(w => valid[i].has(w))), paths };
+
+		dfs(0);
+		const guessLen  = pools.length - 1;
+		const pathCount = pathFlat.length / guessLen;
+		const pathData  = new Uint16Array(pathFlat);
+		return {
+			pools: pools.map((pool, i) => pool.filter(w => valid[i].has(w))),
+			pathData,
+			guessLen,
+			pathCount,
+		};
 	}
 }
 
@@ -436,6 +535,37 @@ function decodeWordFile(buffer) {
 	return { words, freqs, solutionIndices };
 }
 
+// Sort `order` (Uint32Array of indices) descending by `scores` (Int32Array).
+// Uses 4-pass LSD radix sort. XORing with 0x80000000 flips the sign bit so the
+// two's-complement Int32 values compare correctly as Uint32 (negatives sort low).
+function radixSortDescByInt32(order, scores) {
+	const n    = order.length;
+	const keys = new Uint32Array(n);
+	for (let i = 0; i < n; i++) keys[i] = (scores[i] ^ 0x80000000) >>> 0;
+
+	const out = new Uint32Array(n);
+	const cnt = new Uint32Array(256);
+	const pfx = new Uint32Array(257);
+
+	for (let pass = 0; pass < 4; pass++) {
+		const shift = pass * 8;
+		cnt.fill(0);
+		for (let i = 0; i < n; i++) cnt[(keys[order[i]] >>> shift) & 0xFF]++;
+		pfx[0] = 0;
+		for (let b = 0; b < 256; b++) pfx[b + 1] = pfx[b] + cnt[b];
+		for (let i = 0; i < n; i++) {
+			const b = (keys[order[i]] >>> shift) & 0xFF;
+			out[pfx[b]++] = order[i];
+		}
+		order.set(out);
+	}
+
+	// LSD radix sort produces ascending order — reverse for descending
+	for (let i = 0, j = n - 1; i < j; i++, j--) {
+		const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+	}
+}
+
 module.exports = {
 	MISS, WRONG_POSITION, CORRECT,
 	scoreGuess,
@@ -448,4 +578,5 @@ module.exports = {
 	encodeWordFile,
 	decodeWordFile,
 	WordBuffer,
+	radixSortDescByInt32,
 };

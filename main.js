@@ -1,26 +1,73 @@
 const fs = require('fs');
 const { performance } = require('perf_hooks');
-const { parseWordle, WordBuffer } = require('./lib.js');
-
-const WORDS_BIN = './dist/words.bin';
-
-console.log(`Reading ${WORDS_BIN}`);
-const buf = new WordBuffer(fs.readFileSync(WORDS_BIN));
-console.log(`Done — ${buf.wordCount} words, ${buf.solCount} solutions`);
-
-console.log(`Creating a word to index map`);
-const wordToIdx = new Map();
-for (let i = 0; i < buf.wordCount; i++) wordToIdx.set(buf.word(i), i);
-console.log(`Done - ${wordToIdx.size} elements`)
-
+const { parseWordle, WordBuffer, radixSortDescByInt32 } = require('./lib.js');
 const examples = require('./examples.js');
 const { scorecard: example, path: myPath } = examples[examples.length - 1];
 
-console.log(`Running main`);
-let { scoredPaths: paths } = main(example);
-console.log(`Done - ${paths.length} paths found`);
-console.log(paths[0])
-console.log(paths[1])
+// Start program
+let t0 = performance.now();
+
+// Read words from binary file
+const WORDS_BIN = './dist/words.bin';
+const buf = new WordBuffer(fs.readFileSync(WORDS_BIN));
+t0 = t(`Read ${WORDS_BIN} - ${buf.wordCount} words, ${buf.solCount} solutions`, t0);
+
+// Create word to index mapping
+const wordToIdx = new Map();
+for (let i = 0; i < buf.wordCount; i++) wordToIdx.set(buf.word(i), i);
+t0 = t(`Created Word to ID Mapping`, t0);
+
+// Parse the pasted wordle scorecard
+const parsed = parseWordle(example);
+t0 = t('Parsed scorecard', t0);
+
+// Find the wordle answer for the given day
+const answerIdx = buf.solution(parsed.day);
+if (answerIdx === null) throw new Error(`No answer for day ${parsed.day}`);
+t0 = t(`Day ${parsed.day} = ${buf.word(answerIdx)}`, t0);
+
+// Score all words against this days answer
+const answerLetters = buf.letters(answerIdx);
+const scores = new Int32Array(buf.wordCount);
+for (let i = 0; i < buf.wordCount; i++) {
+    const s = buf.scoreGuessVs(i, answerLetters);
+    scores[i] = s[0] | (s[1] << 2) | (s[2] << 4) | (s[3] << 6) | (s[4] << 8);
+}
+t0 = t('Score all words', t0);
+
+// Create pools of possible words for every guess in the given scorecard
+console.log(parsed.guesses)
+const pools = parsed.guesses.map(guess => {
+    const pattern = guess[0] | (guess[1] << 2) | (guess[2] << 4) | (guess[3] << 6) | (guess[4] << 8);
+    const pool = [];
+    for (let i = 0; i < buf.wordCount; i++)
+        if (scores[i] === pattern) pool.push(i);
+    return pool;
+});
+for (const [index, pool] of pools.slice(0, -1).entries())
+    console.log(`  Pool ${index + 1}: ${pool.length} words`);
+t0 = t('build pools', t0);
+
+const preparedPools = buf.preFilterPools(pools, parsed.guesses);
+for (const [i, pool] of preparedPools.slice(0, -1).entries())
+    console.log(`  Pool ${i + 1}: ${pools[i].length} → ${pool.length} after pre-filter`);
+t0 = t('preFilterPools', t0);
+
+const { pools: prunedPools, pathData, guessLen, pathCount } = buf.findValidCandidates(preparedPools, parsed.guesses);
+for (const [index, pool] of prunedPools.slice(0, -1).entries())
+    console.log(`  Pool ${index + 1}: ${pool.length} after DFS prune`);
+t0 = t('findValidCandidates', t0);
+
+const pathScores = new Int32Array(pathCount);
+for (let i = 0; i < pathCount; i++)
+    pathScores[i] = buf.scorePath(pathData.subarray(i * guessLen, i * guessLen + guessLen));
+t0 = t('score paths', t0);
+
+const order = Uint32Array.from({ length: pathCount }, (_, i) => i);
+radixSortDescByInt32(order, pathScores);
+t('sort paths', t0);
+
+console.log(`Done - ${pathCount} paths found`);
 // TODO: do not include the final word indices in the paths[0].path array.
 
 // Save paths as an array of indices into the wordbuffer. 2 bytes per word this way to represent the index instead of 25 bits to represent the word data.
@@ -40,34 +87,37 @@ console.log(paths[1])
 // much more memory to represent these string arrays in JavaScript.
 
 const myPathIndices = myPath.map(w => wordToIdx.get(w));
-console.log(`myPathIndices = [${myPathIndices.join(", ")}]`)
 const myPathScore   = buf.scorePath(myPathIndices);
-const myPathIndex   = paths.findIndex(({ path }) =>
-	path.slice(0, -1).every((wi, i) => wi === myPathIndices[i])
-);
-// TODO: myPathIndex === -1 would mean something went wrong...
-console.log(`Mine: ${myPath.join(' → ')} (score: ${myPathScore.toFixed(2)}, rank: ${myPathIndex === -1 ? 'not found' : '#' + (myPathIndex + 1)})`);
+let myPathDataIdx = -1;
+for (let i = 0; i < pathCount; i++) {
+	const o = i * guessLen;
+	let match = true;
+	for (let j = 0; j < guessLen; j++)
+		if (pathData[o + j] !== myPathIndices[j]) { match = false; break; }
+	if (match) { myPathDataIdx = i; break; }
+}
+const myPathRank = myPathDataIdx === -1 ? -1 : order.indexOf(myPathDataIdx) + 1;
+console.log(`Mine: ${myPath.join(' → ')} (score: ${(myPathScore / 1000).toFixed(2)}, rank: ${myPathRank <= 0 ? 'not found' : '#' + myPathRank})`);
 
 const topPaths = 10;
-console.log(`Paths (${paths.length}) - top ${topPaths}:`);
-for (const { path, score } of paths.slice(0, topPaths)) {
-	const guesses = path.slice(0, -1).map(i => buf.word(i));
-	console.log(`  ${guesses.join(' → ')} (score: ${score.toFixed(2)})`);
+console.log(`Paths (${pathCount}) - top ${topPaths}:`);
+for (let rank = 0; rank < topPaths; rank++) {
+	const i = order[rank];
+	const o = i * guessLen;
+	const words = Array.from({ length: guessLen }, (_, j) => buf.word(pathData[o + j]));
+	console.log(`  ${words.join(' → ')} (score: ${(pathScores[i] / 1000).toFixed(2)})`);
 }
 
-// const guessLength = paths[0].path.slice(0, -1).length;
-// for (let pos = 0; pos < guessLength; pos++) {
+// for (let pos = 0; pos < guessLen; pos++) {
 // 	const wordCounts = {};
-// 	for (const { path } of paths) {
-// 		const wi = path[pos];
+// 	for (let i = 0; i < pathCount; i++) {
+// 		const wi = pathData[i * guessLen + pos];
 // 		wordCounts[wi] = (wordCounts[wi] ?? 0) + 1;
 // 	}
-// 	const topWords = Object.entries(wordCounts)
-// 		.sort((a, b) => b[1] - a[1])
-// 		.slice(0, 10);
+// 	const topWords = Object.entries(wordCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
 // 	console.log(`\nGuess ${pos + 1} - top words:`);
 // 	for (const [wi, count] of topWords) {
-// 		const pct = (count / paths.length * 100).toFixed(1);
+// 		const pct = (count / pathCount * 100).toFixed(1);
 // 		console.log(`  ${buf.word(+wi)} (${pct}%)`);
 // 	}
 // }
@@ -75,50 +125,6 @@ for (const { path, score } of paths.slice(0, topPaths)) {
 function t(label, since) {
 	console.log(`  [${label}] ${(performance.now() - since).toFixed(1)}ms`);
 	return performance.now();
-}
-
-function main(example) {
-	let t0 = performance.now();
-	const parsed    = parseWordle(example);
-	const answerIdx = buf.solution(parsed.day);
-	if (answerIdx === null) throw new Error(`No answer for day ${parsed.day}`);
-	console.log(`Day ${parsed.day} — answer: ${buf.word(answerIdx)}`);
-
-	const answerLetters = buf.letters(answerIdx);
-	// Pack each 5-tile score into 10 bits (2 bits per tile) for O(1) pool matching
-	const scores = new Int32Array(buf.wordCount);
-	for (let i = 0; i < buf.wordCount; i++) {
-		const s = buf.scoreGuessVs(i, answerLetters);
-		scores[i] = s[0] | (s[1] << 2) | (s[2] << 4) | (s[3] << 6) | (s[4] << 8);
-	}
-	t0 = t('score all words', t0);
-
-	const pools = parsed.guesses.map(guess => {
-		const pattern = guess[0] | (guess[1] << 2) | (guess[2] << 4) | (guess[3] << 6) | (guess[4] << 8);
-		const pool = [];
-		for (let i = 0; i < buf.wordCount; i++)
-			if (scores[i] === pattern) pool.push(i);
-		return pool;
-	});
-	for (const [index, pool] of pools.slice(0, -1).entries())
-		console.log(`  Pool ${index + 1}: ${pool.length} words`);
-	t0 = t('build pools', t0);
-
-	const preparedPools = buf.preFilterPools(pools, parsed.guesses);
-	for (const [i, pool] of preparedPools.slice(0, -1).entries())
-		console.log(`  Pool ${i + 1}: ${pools[i].length} → ${pool.length} after pre-filter`);
-	t0 = t('preFilterPools', t0);
-
-	const { pools: prunedPools, paths } = buf.findValidCandidates(preparedPools, parsed.guesses);
-	for (const [index, pool] of prunedPools.slice(0, -1).entries())
-		console.log(`  Pool ${index + 1}: ${pool.length} after DFS prune`);
-	t0 = t('findValidCandidates', t0);
-
-	const scoredPaths = paths.map(path => ({ path, score: buf.scorePath(path.slice(0, -1)) }));
-	scoredPaths.sort((a, b) => b.score - a.score);
-	t('score + sort paths', t0);
-
-	return { scoredPaths, answerIdx, scores };
 }
 
 // // --- Pool 1 size analysis for single-tile first guesses ---
