@@ -1,17 +1,15 @@
-Web interface with a simple way to paste or drag in a wordle score
-button to start processing
-done locally in JS or webassembly
+WebAssembly
+- 2x to 5x performance
 
 creates a graph
 
 when the user clicks on a starting word it can only show the paths from that word
 - for example, i know some people who use the same first word each time and this can help find a more probably path they took
 
-show a warning that the parsed day wordle word will be spoiled!
-
 do nothing if
 - no hard mode enabled
 - guess was made in a single attempt 1/6
+- the first guess was an all gray - it will take ~8 minutes to compute and 2gb ram.
 
 make a twitter bot that crawls for wordle tweets and replies to them or can be invoked in the replies of a tweet to reply with the most common guess prediction and a link to the webpage for it.
 
@@ -71,5 +69,42 @@ Validation
   - Verify myPath is actually a valid hard-mode sequence and explain why if not (which constraint it violates)
 
 The most practically useful next feature is probably pinning known words — if you already know one or two guesses, you can lock those and only search the rest. That would dramatically cut the path space and make the rankings much more meaningful.
+- there should be a pinned method for each step in the path. so for a solution that has 4 guesses before solving, there would be an input box to filter the words at that stage in the path. probably with a regex. `s....` to indicate this node's stage starts with an S
+- the user should also be able to lock these pinned words in place before the computation, in which cases it might actually be possible to compute in a reasonable amount of time.
 
-add unit tests
+Make sure we treat letters from the user as lowercase. everything else is lowercase.
+
+I can generate the size of each first pool for every single possible first guess pattern.
+- which is 3^5=243, since each position has 3 options of tiles: green, yellow, grey. 
+- only the all gray, and 1 green in all pos (5 total) and a yellow in all pos (5 total) - so 11 are actually needed?? since these will have the largest values.
+- I can use this to quickly set a threshold on what pool sizes I should actually attempt to compute. (will take less than a minute on my PC)
+```
+Pool 1 sizes by single-tile pattern (largest = most computation):
+  All gray (current): 2339
+  Yellow at position 2: 1433
+  Green  at position 2 (letter 'o'): 931
+  Yellow at position 5: 864
+  Yellow at position 4: 853
+  Yellow at position 3: 707
+  Yellow at position 1: 675
+  Green  at position 3 (letter 'a'): 665
+  Green  at position 5 (letter 'y'): 438
+  Green  at position 1 (letter 't'): 234
+  Green  at position 4 (letter 'd'): 124
+```
+
+cache the allowed word list? as long as it doesn't change. idk if i want to store data on my user's PC.
+
+don't work with strings on the javascript side, instead work with the binary data
+- other than converting user input to strings and the information I want to output from the 5bit format to a user readable string. then i can perform faster binary operations instead of string manipulation work which will be slower.
+
+## Usage
+
+1. `pip install wordfreq`
+1. `python scripts/frequencies-gen.py > words.js`
+1. `npm install`
+1. `npm test`
+1. `npm run bench`
+1. `npm start`
+1. `npm run serve`
+1. `npm run build`

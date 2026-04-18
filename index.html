@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Reverse Wordle</title>
+	<link rel="icon" href="favicon.png">
+</head>
+<body>
+	<h1>Reverse Wordle</h1>
+
+	<div>
+		<textarea id="input" rows="10" cols="40" placeholder="Paste your Wordle scorecard here..."></textarea>
+	</div>
+	<div>
+		<button id="run" disabled>Find Paths</button>
+		<span id="status">Loading word list...</span>
+	</div>
+	<details id="answer-spoiler" style="display:none">
+		<summary id="answer-summary"></summary>
+		<span id="answer-word"></span>
+	</details>
+	<div>
+		<textarea id="output" rows="40" cols="80" readonly></textarea>
+	</div>
+
+	<script src="index.js"></script>
+</body>
+</html>

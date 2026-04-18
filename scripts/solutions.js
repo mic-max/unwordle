@@ -1762,5 +1762,6 @@ module.exports = [
   "cycle",
   "begun",
   "cubit",
-  "belle"
+  "belle",
+  "toady"
 ];
