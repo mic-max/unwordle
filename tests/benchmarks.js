@@ -2,8 +2,8 @@ const { performance } = require('node:perf_hooks');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const ACCEPTED  = require('../words.js');
-const SOLUTIONS = require('../solutions.js');
+const ACCEPTED  = require('../scripts/words.js');
+const SOLUTIONS = require('../scripts/solutions.js');
 const { scoreGuess, parseWordle, preFilterPools, findValidCandidates } = require('../lib.js');
 
 const EXAMPLE = `

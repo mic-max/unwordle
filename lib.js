@@ -45,7 +45,7 @@ function parseWordle(input) {
 function emptyConstraints() {
 	return {
 		requiredPositions:  {},
-		forbiddenPositions: [new Set(), new Set(), new Set(), new Set(), new Set()],
+		forbiddenPositions: [0, 0, 0, 0, 0],  // bitmask per position: bit l set = letter l forbidden
 		minCount:           {},
 		maxCount:           {},
 	};
@@ -63,11 +63,11 @@ function extractConstraints(guess, score) {
 	}
 	
 	const requiredPositions  = {};
-	const forbiddenPositions = [new Set(), new Set(), new Set(), new Set(), new Set()];
-	
+	const forbiddenPositions = [0, 0, 0, 0, 0];
+
 	for (let i = 0; i < 5; i++) {
 		if (score[i] === CORRECT) requiredPositions[i] = guess[i];
-		else if (score[i] === WRONG_POSITION) forbiddenPositions[i].add(guess[i]);
+		else if (score[i] === WRONG_POSITION) forbiddenPositions[i] |= 1 << (guess[i].charCodeAt(0) - 97);
 	}
 	
 	const maxCount = {};
@@ -80,33 +80,41 @@ function extractConstraints(guess, score) {
 
 function mergeConstraints(a, b) {
 	const requiredPositions = Object.assign({}, a.requiredPositions, b.requiredPositions);
-	
-	const forbiddenPositions = [];
-	for (let i = 0; i < 5; i++)
-		forbiddenPositions.push(new Set([...a.forbiddenPositions[i], ...b.forbiddenPositions[i]]));
-	
-	const allLetters = new Set([...Object.keys(a.minCount), ...Object.keys(b.minCount)]);
+
+	const forbiddenPositions = [
+		a.forbiddenPositions[0] | b.forbiddenPositions[0],
+		a.forbiddenPositions[1] | b.forbiddenPositions[1],
+		a.forbiddenPositions[2] | b.forbiddenPositions[2],
+		a.forbiddenPositions[3] | b.forbiddenPositions[3],
+		a.forbiddenPositions[4] | b.forbiddenPositions[4],
+	];
+
 	const minCount = {};
 	const maxCount = {};
-	
-	for (const letter of allLetters) {
+	for (const letter of Object.keys(a.minCount)) {
 		minCount[letter] = Math.max(a.minCount[letter] || 0, b.minCount[letter] || 0);
 		const aMax = a.maxCount[letter] !== undefined ? a.maxCount[letter] : Infinity;
 		const bMax = b.maxCount[letter] !== undefined ? b.maxCount[letter] : Infinity;
 		const merged = Math.min(aMax, bMax);
 		if (merged !== Infinity) maxCount[letter] = merged;
 	}
-	
+	for (const letter of Object.keys(b.minCount)) {
+		if (letter in minCount) continue;
+		minCount[letter] = b.minCount[letter] || 0;
+		const bMax = b.maxCount[letter] !== undefined ? b.maxCount[letter] : Infinity;
+		if (bMax !== Infinity) maxCount[letter] = bMax;
+	}
+
 	return { requiredPositions, forbiddenPositions, minCount, maxCount };
 }
 
 function satisfiesConstraints(word, constraints) {
 	for (const [pos, letter] of Object.entries(constraints.requiredPositions))
 		if (word[pos] !== letter) return false;
-	
+
 	for (let i = 0; i < 5; i++)
-		if (constraints.forbiddenPositions[i].has(word[i])) return false;
-	
+		if (constraints.forbiddenPositions[i] & (1 << (word[i].charCodeAt(0) - 97))) return false;
+
 	for (const letter of Object.keys(constraints.minCount)) {
 		let count = 0;
 		for (const ch of word) if (ch === letter) count++;
@@ -207,6 +215,164 @@ function decodeWords(bytes, count) {
 	return words;
 }
 
+// Wraps a words.bin ArrayBuffer/Uint8Array and exposes all algorithm operations on
+// raw word indices.  String decoding (.word(i)) is deferred to display time only.
+class WordBuffer {
+	constructor(buffer) {
+		const bytes    = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+		this._view     = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+		this.wordCount = this._view.getUint16(0, true);
+		this.solCount  = this._view.getUint16(2, true);
+		this._solBase  = 4 + this.wordCount * 4;
+
+		// Precompute all letter values into a flat Uint8Array so letters(i) is a
+		// zero-copy subarray view rather than a bit-unpack on every call.
+		this._lettersFlat = new Uint8Array(this.wordCount * 5);
+		for (let i = 0; i < this.wordCount; i++) {
+			const e = this._view.getUint32(4 + i * 4, true);
+			const base = i * 5;
+			this._lettersFlat[base]     =  e        & 0x1F;
+			this._lettersFlat[base + 1] = (e >>  5) & 0x1F;
+			this._lettersFlat[base + 2] = (e >> 10) & 0x1F;
+			this._lettersFlat[base + 3] = (e >> 15) & 0x1F;
+			this._lettersFlat[base + 4] = (e >> 20) & 0x1F;
+		}
+	}
+
+	// Raw uint32 entry: bits 0-24 = five 5-bit letters, bits 25-31 = 7-bit frequency
+	entry(i) { return this._view.getUint32(4 + i * 4, true); }
+
+	// Five letter values (0=a … 25=z) for word i — zero-copy view into _lettersFlat
+	letters(i) { return this._lettersFlat.subarray(i * 5, i * 5 + 5); }
+
+	// Normalised frequency for word i
+	freq(i) { return ((this.entry(i) >> 25) & 0x7F) / 127 * FREQ_MAX; }
+
+	// Decode word i to a string — call only for display
+	word(i) {
+		const e = this.entry(i);
+		return String.fromCharCode(
+			97 + ( e        & 0x1F), 97 + ((e >>  5) & 0x1F),
+			97 + ((e >> 10) & 0x1F), 97 + ((e >> 15) & 0x1F),
+			97 + ((e >> 20) & 0x1F),
+		);
+	}
+
+	// Word index for the given Wordle day, or null for placeholder days
+	solution(day) {
+		const idx = this._view.getUint16(this._solBase + day * 2, true);
+		return idx === 0xFFFF ? null : idx;
+	}
+
+	// Score guess word index against pre-computed answer letters array
+	scoreGuessVs(guessIdx, al) {
+		const gl     = this.letters(guessIdx);
+		const result = [MISS, MISS, MISS, MISS, MISS];
+		const pool   = al.slice();
+		for (let i = 0; i < 5; i++)
+			if (gl[i] === al[i]) { result[i] = CORRECT; pool[i] = -1; }
+		for (let i = 0; i < 5; i++) {
+			if (result[i] === CORRECT) continue;
+			const j = pool.indexOf(gl[i]);
+			if (j !== -1) { result[i] = WRONG_POSITION; pool[j] = -1; }
+		}
+		return result;
+	}
+
+	// Score guess word index against answer word index
+	scoreGuess(guessIdx, answerIdx) {
+		return this.scoreGuessVs(guessIdx, this.letters(answerIdx));
+	}
+
+	// Score a path of word indices using their encoded frequencies
+	scorePath(path) {
+		let score = 0;
+		const weights    = [1, 1, .9, .8, .5, .5];
+		const posWeights = [1, 0.8, 0.6, 0.2, 0.1, 0.1];
+		for (let i = 0; i < path.length; i++) {
+			const f  = this.freq(path[i]);
+			const ls = this.letters(path[i]);
+			score += f * f * weights[i];
+			const uniq = new Set([ls[0], ls[1], ls[2], ls[3], ls[4]]);
+			score -= (5 - uniq.size) * 20.0 * posWeights[i];
+		}
+		return score;
+	}
+
+	// --- constraint helpers (integer letter values as keys, not chars) ---
+
+	_extractConstraints(letters, score) {
+		const minCount = {}, hadGray = {};
+		for (let i = 0; i < 5; i++) {
+			const l = letters[i];
+			if (minCount[l] === undefined) minCount[l] = 0;
+			if (score[i] === CORRECT || score[i] === WRONG_POSITION) minCount[l]++;
+			else hadGray[l] = true;
+		}
+		const requiredPositions  = {};
+		const forbiddenPositions = [0, 0, 0, 0, 0];
+		for (let i = 0; i < 5; i++) {
+			if (score[i] === CORRECT)             requiredPositions[i]    = letters[i];
+			else if (score[i] === WRONG_POSITION) forbiddenPositions[i] |= 1 << letters[i];
+		}
+		const maxCount = {};
+		for (const l of Object.keys(minCount))
+			if (hadGray[l]) maxCount[l] = minCount[l];
+		return { requiredPositions, forbiddenPositions, minCount, maxCount };
+	}
+
+	_satisfiesConstraints(letters, constraints) {
+		for (const [pos, l] of Object.entries(constraints.requiredPositions))
+			if (letters[+pos] !== l) return false;
+		for (let i = 0; i < 5; i++)
+			if (constraints.forbiddenPositions[i] & (1 << letters[i])) return false;
+		for (const lStr of Object.keys(constraints.minCount)) {
+			const l = +lStr;
+			let count = 0;
+			for (const letter of letters) if (letter === l) count++;
+			if (count < constraints.minCount[lStr]) return false;
+			if (constraints.maxCount[lStr] !== undefined && count > constraints.maxCount[lStr]) return false;
+		}
+		return true;
+	}
+
+	// --- pool filtering and DFS (pools are arrays of word indices) ---
+
+	preFilterPools(pools, guesses) {
+		const filtered = pools.map(p => p.slice());
+		for (let i = filtered.length - 2; i >= 0; i--) {
+			filtered[i] = filtered[i].filter(wi => {
+				const c = this._extractConstraints(this.letters(wi), guesses[i]);
+				return filtered[i + 1].some(ni => this._satisfiesConstraints(this.letters(ni), c));
+			});
+		}
+		return filtered;
+	}
+
+	findValidCandidates(pools, guesses) {
+		const valid = pools.map(() => new Set());
+		const paths = [];
+		const dfs   = (poolIdx, constraints, path) => {
+			if (poolIdx === pools.length) {
+				for (let i = 0; i < path.length; i++) valid[i].add(path[i]);
+				paths.push([...path]);
+				return;
+			}
+			for (const wi of pools[poolIdx]) {
+				const letters = this.letters(wi);
+				if (!this._satisfiesConstraints(letters, constraints)) continue;
+				path.push(wi);
+				dfs(poolIdx + 1,
+					mergeConstraints(constraints, this._extractConstraints(letters, guesses[poolIdx])),
+					path);
+				path.pop();
+			}
+		};
+		dfs(0, emptyConstraints(), []);
+		return { pools: pools.map((pool, i) => pool.filter(w => valid[i].has(w))), paths };
+	}
+}
+
 // Binary file format:
 //   [uint16 word_count][uint16 solution_count]
 //   [word_count × uint32 entry]    bits 0-24: five 5-bit letters (a=0…z=25), bits 25-31: 7-bit normalised frequency
@@ -281,4 +447,5 @@ module.exports = {
 	decodeWords,
 	encodeWordFile,
 	decodeWordFile,
+	WordBuffer,
 };
