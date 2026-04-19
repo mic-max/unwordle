@@ -6,7 +6,16 @@ I was able to find the Wordle dictionary by viewing the source of the website an
 
 For the wordle solutions I downloaded and parsed the list from <https://www.stadafa.com/2021/09/every-worlde-word-so-far-updated-daily.html>.
 
-I am looking for a way to update the solutions list with each new day's wordle answer as they arrive. Or is there possibly a way to figure it out even earlier than that?
+The solutions generator script makes requests to this endpoint for future dates on builds and populates the solutions data structure.
+<https://www.nytimes.com/svc/wordle/v2/YYYY-MM-DD.json>
+
+## Exploding Path Counts
+
+What causes the paths found to be so large in some cases?
+
+- All grey first guess
+- Consecutive guesses that have the same score
+- The answer containing duplicate letters
 
 ---
 

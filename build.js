@@ -2,6 +2,8 @@ const fs   = require('fs');
 const { minify } = require('terser');
 const { encodeWordFile } = require('./lib.js');
 const CleanCSS = require('clean-css')
+const ACCEPTED   = require('./scripts/words.js');
+const SOLUTIONS  = require('./scripts/solutions.js');
 
 async function build() {
 	const html       = fs.readFileSync('index.html', 'utf8');
@@ -33,14 +35,13 @@ async function build() {
         .replace('<script src="examples.js"></script>', `<script>${minExamplesJS}</script>`)
 		.replace('<script src="lib.js"></script>', '')
         .replace('<script src="index.js"></script>', `<script>${minJS}</script>`)
+        .replace('<li>Wordle day <= 1765</li>', `<li>Wordle day <= ${SOLUTIONS.length}</li>`)
         // Strip HTML comments and collapse whitespace
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/\s+/g, ' ')
 		.replace(/> </g, '><')
 		.trim();
 
-	const ACCEPTED   = require('./scripts/words.js');
-	const SOLUTIONS  = require('./scripts/solutions.js');
 	const wordList   = Object.keys(ACCEPTED);
 	const freqs      = wordList.map(w => ACCEPTED[w]);
 	const wordIndex  = new Map(wordList.map((w, i) => [w, i]));
