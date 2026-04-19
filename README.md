@@ -1,7 +1,19 @@
 WebAssembly
 - 2x to 5x performance
 
-creates a graph
+creates a graph, sankey diagram
+compress the path data into a trie. instead of a list of entire paths!
+
+make a program to parse wordle scores from a discord channel, twitter, etc.
+
+When it shows the top 10 words for guess 1 it basically means that there are the most paths that lead out of this word. Which means that it eliminated the least amount of paths. Meaning it was a horrible guess. What you really want is one that has the least amount of paths??? Maybe the middle amount???
+
+The website is showing percents higher than 100%...?
+```
+Guess 3 — top words:
+ dulce (136.6%)
+ polje (129.1%)
+```
 
 attempt to parse the wordle scorecard input field onchange.
 - have a button to load an example scorecard. easier testing and for people on the site just playing around with it.

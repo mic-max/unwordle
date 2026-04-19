@@ -1,16 +1,25 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-	<meta charset="UTF-8">
 	<title>Reverse Wordle</title>
+    <link rel="stylesheet" href="style.css">
 	<link rel="icon" href="favicon.png">
+	<link rel="preload" href="words.bin" as="fetch" crossorigin>
 </head>
 <body>
 	<h1>Reverse Wordle</h1>
+    <p>Requirements:</p>
+    <ul>
+        <li>Super hard mode rules*</li>
+        <li>Solved in 2 to 6 guesses</li>
+        <li>Wordle day <= 1764</li>
+    </ul>
 
 	<div>
 		<textarea id="input" rows="10" cols="40" placeholder="Paste your Wordle scorecard here..."></textarea>
+		<span id="parse-status" style="font-size:1.4em;vertical-align:middle;margin-left:8px"></span>
 	</div>
+	<div id="dev-examples"></div>
 	<div>
 		<button id="run" disabled>Find Paths</button>
 		<span id="status">Loading word list...</span>
@@ -23,6 +32,7 @@
 		<textarea id="output" rows="40" cols="80" readonly></textarea>
 	</div>
 
+    <script src="lib.js"></script>
 	<script src="index.js"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@ const { build } = require('./build.js')
 const chokidar = require('chokidar')
 const { spawn } = require('child_process')
 
-const SOURCES = ['index.html', 'index.js', 'lib.js', 'scripts/words.js', 'scripts/solutions.js', 'favicon.png']
+const SOURCES = ['index.html', 'style.css', 'index.js', 'lib.js', 'worker.js', 'scripts/words.js', 'scripts/solutions.js', 'favicon.png']
 
 build().then(() => {
 	spawn('npx', ['serve', 'dist', '-p', '3000'], { stdio: 'inherit', shell: true })

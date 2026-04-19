@@ -40,6 +40,11 @@ function parseWordle(input) {
 	const hardMode = headerMatch[4] === '*';
 	const guesses = lines.slice(1).map(row => [...row].map(tile => TILE[tile]));
 	return { day, hardMode, guesses };
+    // TODO: must be 2 to 6 guesses.
+    // must be solved (no X/6)
+    // each guess must include 5 emojis, those emojis must validly map to a
+    //   miss, wrong position, or a correct.
+    // 
 }
 
 function emptyConstraints() {
@@ -229,6 +234,7 @@ class WordBuffer {
 		// zero-copy subarray view rather than a bit-unpack on every call.
 		this._lettersFlat = new Uint8Array(this.wordCount * 5);
 		this._uniqueCount = new Uint8Array(this.wordCount);
+		this._pool        = new Uint8Array(5); // scratch for scoreGuessVsPacked
 		for (let i = 0; i < this.wordCount; i++) {
 			const e = this._view.getUint32(4 + i * 4, true);
 			const base = i * 5;
@@ -270,6 +276,26 @@ class WordBuffer {
 	solution(day) {
 		const idx = this._view.getUint16(this._solBase + day * 2, true);
 		return idx === 0xFFFF ? null : idx;
+	}
+
+	// Allocation-free version of scoreGuessVs — returns the 10-bit packed int directly.
+	// Uses this._pool as scratch; 255 is the consumed-position sentinel (letters are 0–25).
+	scoreGuessVsPacked(guessIdx, al) {
+		const gl   = this.letters(guessIdx);
+		const pool = this._pool;
+		pool[0] = al[0]; pool[1] = al[1]; pool[2] = al[2]; pool[3] = al[3]; pool[4] = al[4];
+		let result = 0, greenMask = 0;
+		for (let i = 0; i < 5; i++) {
+			if (gl[i] === al[i]) { greenMask |= 1 << i; result |= 2 << (i * 2); pool[i] = 255; }
+		}
+		for (let i = 0; i < 5; i++) {
+			if (greenMask & (1 << i)) continue;
+			const l = gl[i];
+			for (let j = 0; j < 5; j++) {
+				if (pool[j] === l) { result |= 1 << (i * 2); pool[j] = 255; break; }
+			}
+		}
+		return result;
 	}
 
 	// Score guess word index against pre-computed answer letters array
@@ -356,8 +382,10 @@ class WordBuffer {
 	}
 
 	findValidCandidates(pools, guesses) {
+		const guessLen = pools.length;
 		const valid    = pools.map(() => new Set());
-		const pathFlat = [];  // flat list of guess indices, answer excluded
+		const edgeSets = Array.from({ length: guessLen - 1 }, () => new Set());
+		let pathCount  = 0;
 		const path     = [];
 
 		// Mutable constraint state — never reallocated during search
@@ -417,7 +445,7 @@ class WordBuffer {
 			for (let l = 0; l < 26; l++) {
 				if (!((touchedBits >> l) & 1)) continue;
 				const tm = _tempMin[l];
-				_tempMin[l] = 0; // clear scratch for reuse
+				_tempMin[l] = 0;
 				if (tm > minCount[l]) {
 					undoLog[logPtr++] = 10 + l; undoLog[logPtr++] = minCount[l];
 					minCount[l] = tm;
@@ -442,10 +470,11 @@ class WordBuffer {
 		};
 
 		const dfs = (poolIdx) => {
-			if (poolIdx === pools.length) {
-				// path includes the answer at the end — record valid indices but exclude it from pathFlat
-				for (let i = 0; i < path.length - 1; i++) valid[i].add(path[i]);
-				for (let i = 0; i < path.length - 1; i++) pathFlat.push(path[i]);
+			if (poolIdx === guessLen) {
+				for (let i = 0; i < guessLen; i++) valid[i].add(path[i]);
+				for (let i = 0; i < guessLen - 1; i++)
+					edgeSets[i].add(path[i] * 65536 + path[i + 1]);
+				pathCount++;
 				return;
 			}
 			for (const wi of pools[poolIdx]) {
@@ -460,15 +489,162 @@ class WordBuffer {
 		};
 
 		dfs(0);
-		const guessLen  = pools.length - 1;
-		const pathCount = pathFlat.length / guessLen;
-		const pathData  = new Uint16Array(pathFlat);
+
+		// Sorted node lists per layer (word indices into WordBuffer)
+		const layers = valid.map(s => Uint16Array.from([...s].sort((a, b) => a - b)));
+
+		// CSR adjacency lists per layer transition k → k+1.
+		// Successors stored as local positions (indices into layers[k+1]) for O(1) DP access.
+		const dagOffsets    = [];
+		const dagSuccessors = [];
+		for (let k = 0; k < guessLen - 1; k++) {
+			const nodes     = layers[k];
+			const nextNodes = layers[k + 1];
+			const nodePos   = new Map(Array.from(nodes,     (wi, j) => [wi, j]));
+			const nextPos   = new Map(Array.from(nextNodes, (wi, j) => [wi, j]));
+			const edges     = [...edgeSets[k]].sort((a, b) => a - b);
+			const offsets   = new Uint32Array(nodes.length + 1);
+			const succ      = new Uint16Array(edges.length);
+			for (const e of edges) offsets[nodePos.get((e / 65536) | 0) + 1]++;
+			for (let j = 0; j < nodes.length; j++) offsets[j + 1] += offsets[j];
+			for (let j = 0; j < edges.length; j++) succ[j] = nextPos.get(edges[j] & 0xFFFF);
+			dagOffsets.push(offsets);
+			dagSuccessors.push(succ);
+		}
+
 		return {
 			pools: pools.map((pool, i) => pool.filter(w => valid[i].has(w))),
-			pathData,
+			dag: { layers, offsets: dagOffsets, successors: dagSuccessors },
 			guessLen,
 			pathCount,
 		};
+	}
+
+	// Score contribution of a single word at a given guess layer (raw float, not ×1000)
+	_nodeScore(wi, layerIdx) {
+		const weights    = [1, 1, .9, .8, .5, .5];
+		const posWeights = [1, 0.8, 0.6, 0.2, 0.1, 0.1];
+		const f = this.freq(wi);
+		return f * f * weights[layerIdx] - (5 - this._uniqueCount[wi]) * 20.0 * posWeights[layerIdx];
+	}
+
+	// Backward DP: best[k][j] = max total path score (float) achievable from layer-k local node j
+	computeDagScores(dag) {
+		const { layers, offsets, successors } = dag;
+		const guessLen = layers.length;
+		const best = layers.map((nodes, k) => {
+			const a = new Float64Array(nodes.length);
+			for (let j = 0; j < nodes.length; j++) a[j] = this._nodeScore(nodes[j], k);
+			return a;
+		});
+		for (let k = guessLen - 2; k >= 0; k--) {
+			const nb = best[k + 1];
+			for (let j = 0; j < layers[k].length; j++) {
+				let mx = -Infinity;
+				for (let e = offsets[k][j]; e < offsets[k][j + 1]; e++) {
+					if (nb[successors[k][e]] > mx) mx = nb[successors[k][e]];
+				}
+				best[k][j] += mx;
+			}
+		}
+		return best;
+	}
+
+	// Top-K complete paths by score using branch-and-bound DFS with DP upper-bound pruning.
+	// Returns array of { score (int ×1000), path (Uint16Array of word indices) }, sorted descending.
+	dagTopK(dag, best, k) {
+		const { layers, offsets, successors } = dag;
+		const guessLen = layers.length;
+		const results  = [];
+		let kthBest    = -Infinity;
+		const pathBuf  = new Uint16Array(guessLen);
+
+		const dfs = (layerIdx, parentLocalIdx, scoreSoFar) => {
+			const baseEdge  = layerIdx === 0 ? 0 : offsets[layerIdx - 1][parentLocalIdx];
+			const edgeCount = layerIdx === 0 ? layers[0].length
+				: offsets[layerIdx - 1][parentLocalIdx + 1] - baseEdge;
+
+			for (let ci = 0; ci < edgeCount; ci++) {
+				const j  = layerIdx === 0 ? ci : successors[layerIdx - 1][baseEdge + ci];
+				const wi = layers[layerIdx][j];
+				const ns = this._nodeScore(wi, layerIdx);
+				if ((scoreSoFar + best[layerIdx][j]) * 1000 <= kthBest) continue;
+				pathBuf[layerIdx] = wi;
+				if (layerIdx === guessLen - 1) {
+					const score = Math.round((scoreSoFar + ns) * 1000);
+					if (results.length < k || score > kthBest) {
+						results.push({ score, path: pathBuf.slice() });
+						results.sort((a, b) => b.score - a.score);
+						if (results.length > k) results.pop();
+						if (results.length === k) kthBest = results[k - 1].score;
+					}
+				} else {
+					dfs(layerIdx + 1, j, scoreSoFar + ns);
+				}
+			}
+		};
+
+		dfs(0, 0, 0);
+		return results;
+	}
+
+	// Forward+backward DP: returns per-node path-through counts for each layer.
+	// pathsThrough[k][j] = number of complete paths passing through layer-k local node j.
+	dagPathCounts(dag) {
+		const { layers, offsets, successors } = dag;
+		const guessLen = layers.length;
+		const toCounts   = layers.map(nodes => new Float64Array(nodes.length));
+		const fromCounts = layers.map(nodes => new Float64Array(nodes.length));
+		toCounts[0].fill(1);
+		for (let k = 0; k < guessLen - 1; k++)
+			for (let j = 0; j < layers[k].length; j++) {
+				const tc = toCounts[k][j];
+				if (tc === 0) continue;
+				for (let e = offsets[k][j]; e < offsets[k][j + 1]; e++)
+					toCounts[k + 1][successors[k][e]] += tc;
+			}
+		fromCounts[guessLen - 1].fill(1);
+		for (let k = guessLen - 2; k >= 0; k--)
+			for (let j = 0; j < layers[k].length; j++) {
+				let fc = 0;
+				for (let e = offsets[k][j]; e < offsets[k][j + 1]; e++)
+					fc += fromCounts[k + 1][successors[k][e]];
+				fromCounts[k][j] = fc;
+			}
+		return layers.map((nodes, k) => {
+			const out = new Float64Array(nodes.length);
+			for (let j = 0; j < nodes.length; j++) out[j] = toCounts[k][j] * fromCounts[k][j];
+			return out;
+		});
+	}
+
+	// Count paths with integer score (×1000) strictly greater than threshold.
+	// Uses DP upper-bound pruning so only promising branches are explored.
+	dagCountAbove(dag, best, threshold) {
+		const { layers, offsets, successors } = dag;
+		const guessLen = layers.length;
+		let count = 0;
+
+		const dfs = (layerIdx, parentLocalIdx, scoreSoFar) => {
+			const baseEdge  = layerIdx === 0 ? 0 : offsets[layerIdx - 1][parentLocalIdx];
+			const edgeCount = layerIdx === 0 ? layers[0].length
+				: offsets[layerIdx - 1][parentLocalIdx + 1] - baseEdge;
+
+			for (let ci = 0; ci < edgeCount; ci++) {
+				const j  = layerIdx === 0 ? ci : successors[layerIdx - 1][baseEdge + ci];
+				const wi = layers[layerIdx][j];
+				const ns = this._nodeScore(wi, layerIdx);
+				if ((scoreSoFar + best[layerIdx][j]) * 1000 < threshold) continue;
+				if (layerIdx === guessLen - 1) {
+					if (Math.round((scoreSoFar + ns) * 1000) > threshold) count++;
+				} else {
+					dfs(layerIdx + 1, j, scoreSoFar + ns);
+				}
+			}
+		};
+
+		dfs(0, 0, 0);
+		return count;
 	}
 }
 
@@ -566,7 +742,57 @@ function radixSortDescByInt32(order, scores) {
 	}
 }
 
-module.exports = {
+// Runs the full analysis pipeline. Returns a JSON-serializable result safe to postMessage
+// from a Web Worker. K controls how many top paths to include (default 25).
+function analyzeWordle(buf, example, K = 25) {
+	const parsed    = parseWordle(example);
+	const answerIdx = buf.solution(parsed.day);
+	if (answerIdx === null) throw new Error(`No answer for day ${parsed.day}`);
+
+	const answerLetters = buf.letters(answerIdx);
+	const scores = new Int32Array(buf.wordCount);
+	for (let i = 0; i < buf.wordCount; i++)
+		scores[i] = buf.scoreGuessVsPacked(i, answerLetters);
+
+	const guesses = parsed.guesses.slice(0, -1);
+	const pools = guesses.map(guess => {
+		const pattern = guess[0] | (guess[1] << 2) | (guess[2] << 4) | (guess[3] << 6) | (guess[4] << 8);
+		const pool = [];
+		for (let i = 0; i < buf.wordCount; i++)
+			if (scores[i] === pattern) pool.push(i);
+		return pool;
+	});
+
+	const prepared   = buf.preFilterPools(pools, guesses);
+	const { dag, guessLen, pathCount } = buf.findValidCandidates(prepared, guesses);
+	const best       = buf.computeDagScores(dag);
+	const pathCounts = buf.dagPathCounts(dag);
+
+	const topPaths = buf.dagTopK(dag, best, K).map(({ score, path }) => ({
+		score,
+		words: Array.from(path, wi => buf.word(wi)),
+	}));
+
+	const perPosition = dag.layers.map((nodes, k) => {
+		const counts = pathCounts[k];
+		return Array.from(nodes, (wi, j) => ({ word: buf.word(wi), count: counts[j] }))
+			.sort((a, b) => b.count - a.count)
+			.slice(0, 10)
+			.map(({ word, count }) => ({ word, pct: count / pathCount * 100 }));
+	});
+
+	return {
+		day: parsed.day,
+		answer: buf.word(answerIdx),
+		hardMode: parsed.hardMode,
+		guessLen,
+		pathCount,
+		topPaths,
+		perPosition,
+	};
+}
+
+if (typeof module !== 'undefined') module.exports = {
 	MISS, WRONG_POSITION, CORRECT,
 	scoreGuess,
 	parseWordle,
@@ -579,4 +805,5 @@ module.exports = {
 	decodeWordFile,
 	WordBuffer,
 	radixSortDescByInt32,
+	analyzeWordle,
 };

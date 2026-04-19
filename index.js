@@ -1,98 +1,92 @@
-async function loadModule(src) {
-	const resp = await fetch(src);
-	const text = await resp.text();
-	const fn = new Function('module', 'exports', text);
-	const mod = { exports: {} };
-	fn(mod, mod.exports);
-	return mod.exports;
-}
+let wordsBin = null, wordsReady = false, parseOk = false;
 
-let lib, ACCEPTED, SOLUTIONS;
+const inputEl       = document.getElementById('input');
+const parseStatusEl = document.getElementById('parse-status');
+const statusEl      = document.getElementById('status');
+const outputEl      = document.getElementById('output');
+const runBtn        = document.getElementById('run');
 
-function runAnalysis(example) {
-	const { parseWordle, scoreGuess, preFilterPools, findValidCandidates, scorePath } = lib;
-	const lines = [];
+function updateRunBtn() { runBtn.disabled = !(wordsReady && parseOk); }
 
-	const parsed = parseWordle(example);
-	if (!parsed.hardMode)
-		lines.push('Warning: hard mode (*) not detected — results may be empty or inaccurate.\n');
+inputEl.addEventListener('input', () => {
+	const text = inputEl.value.trim();
+	if (!text) { parseStatusEl.textContent = ''; parseOk = false; updateRunBtn(); return; }
+	try {
+		const parsed = parseWordle(text);
+		parseStatusEl.textContent = parsed.hardMode ? '✅' : '⚠️';
+		parseOk = true;
+	} catch { parseStatusEl.textContent = '❌'; parseOk = false; }
+	updateRunBtn();
+});
 
-	const answer = SOLUTIONS[parsed.day];
-	if (!answer) throw new Error(`No answer found for day ${parsed.day}`);
-	const spoiler = document.getElementById('answer-spoiler');
-	spoiler.removeAttribute('open');
-	spoiler.style.display = '';
-	document.getElementById('answer-summary').textContent = `Day ${parsed.day} — click to reveal answer`;
-	document.getElementById('answer-word').textContent = answer;
-
-	const scores = {};
-	for (const word in ACCEPTED) scores[word] = scoreGuess(word, answer);
-
-	const pools = parsed.guesses.map(guess =>
-		Object.keys(scores).filter(w => scores[w].every((v, i) => v === guess[i]))
-	);
-
-	const prepared = preFilterPools(pools, parsed.guesses);
-	for (const [i, pool] of prepared.slice(0, -1).entries())
-		lines.push(`Pool ${i + 1}: ${pools[i].length} → ${pool.length} words (after pre-filter)`);
-
-	const { paths } = findValidCandidates(prepared, parsed.guesses);
-
-	const scoredPaths = paths
-		.map(path => ({ path, score: scorePath(path.slice(0, -1), ACCEPTED) }))
-		.sort((a, b) => b.score - a.score);
-
-	lines.push(`\nPaths found: ${scoredPaths.length}`);
-
-	lines.push('\nTop 25 paths:');
-	for (const { path, score } of scoredPaths.slice(0, 25))
-		lines.push(`  ${path.slice(0, -1).join(' → ')}  (score: ${score.toFixed(2)})`);
-
-	const guessLength = prepared.length - 1;
-	for (let pos = 0; pos < guessLength; pos++) {
-		const wordCounts = {};
-		for (const { path } of scoredPaths)
-			wordCounts[path[pos]] = (wordCounts[path[pos]] ?? 0) + 1;
-		const top = Object.entries(wordCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-		lines.push(`\nGuess ${pos + 1} — top words:`);
-		for (const [word, count] of top)
-			lines.push(`  ${word}  (${(count / scoredPaths.length * 100).toFixed(1)}%)`);
-	}
-
-	return lines.join('\n');
-}
-
-const inputEl  = document.getElementById('input');
-const statusEl = document.getElementById('status');
-const outputEl = document.getElementById('output');
-const runBtn   = document.getElementById('run');
+let activeWorker = null;
 
 runBtn.addEventListener('click', () => {
+	if (activeWorker) activeWorker.terminate();
+	parseStatusEl.textContent = '⏳';
 	statusEl.textContent = 'Computing… this may take several seconds.';
 	outputEl.value = '';
 	document.getElementById('answer-spoiler').style.display = 'none';
-	// setTimeout gives the browser a frame to render the status before the DFS blocks
-	setTimeout(() => {
-		try {
-			outputEl.value = runAnalysis(inputEl.value);
-			statusEl.textContent = 'Done.';
-		} catch (e) {
-			statusEl.textContent = `Error: ${e.message}`;
-			console.error(e);
+
+	activeWorker = new Worker('./worker.js');
+	activeWorker.onmessage = ({ data }) => {
+		activeWorker = null;
+		if (data.error) {
+			statusEl.textContent = `Error: ${data.error}`;
+			parseStatusEl.textContent = '❌';
+			return;
 		}
-	}, 50);
+		const r = data.result;
+		const spoiler = document.getElementById('answer-spoiler');
+		spoiler.removeAttribute('open');
+		spoiler.style.display = '';
+		document.getElementById('answer-summary').textContent = `Day ${r.day} — click to reveal answer`;
+		document.getElementById('answer-word').textContent = r.answer;
+		outputEl.value = formatResult(r);
+		statusEl.textContent = 'Done.';
+		parseStatusEl.textContent = '✅';
+	};
+	activeWorker.onerror = (e) => {
+		activeWorker = null;
+		statusEl.textContent = `Worker error: ${e.message}`;
+		parseStatusEl.textContent = '❌';
+	};
+	activeWorker.postMessage({ wordsBin, example: inputEl.value });
 });
 
-Promise.all([
-	loadModule('./lib.js'),
-	fetch('./res/words.bin').then(r => r.arrayBuffer()),
-]).then(([l, buf]) => {
-	lib = l;
-	const { words, freqs, solutionIndices } = lib.decodeWordFile(buf);
-	ACCEPTED  = Object.fromEntries(words.map((w, i) => [w, freqs[i]]));
-	SOLUTIONS = solutionIndices.map(idx => idx === 0xFFFF ? null : words[idx]);
-	statusEl.textContent = `Ready — ${words.length} words loaded.`;
-	runBtn.disabled = false;
+function formatResult(r) {
+	const lines = [];
+	if (!r.hardMode)
+		lines.push('Warning: hard mode (*) not detected — results may be empty or inaccurate.\n');
+	lines.push(`Paths found: ${r.pathCount.toLocaleString()}\n`);
+	lines.push(`Top ${r.topPaths.length} paths:`);
+	for (const { score, words } of r.topPaths)
+		lines.push(`  ${words.join(' → ')}  (score: ${(score / 1000).toFixed(2)})`);
+	for (let pos = 0; pos < r.guessLen; pos++) {
+		lines.push(`\nGuess ${pos + 1} — top words:`);
+		for (const { word, pct } of r.perPosition[pos])
+			lines.push(`  ${word}  (${pct.toFixed(1)}%)`);
+	}
+	return lines.join('\n');
+}
+
+// Dev examples — delete this block when no longer needed
+[
+	`Wordle 1,763 4/6*\n\n⬛⬛🟨⬛⬛\n🟩⬛⬛⬛🟩\n🟩⬛🟩⬛🟩\n🟩🟩🟩🟩🟩`,
+	`Wordle 1,763 6/6*\n\n⬛⬛⬛⬛⬛\n⬛🟨⬛⬛⬛\n⬛⬛🟩⬛🟩\n⬛🟩🟩⬛🟩\n⬛🟩🟩⬛🟩\n🟩🟩🟩🟩🟩`,
+	`Wordle 1,764 4/6*\n\n🟩⬛⬛⬛⬛\n🟩⬛⬛⬛⬛\n🟩🟨⬛⬛⬛\n🟩🟩🟩🟩🟩`,
+].forEach((scorecard, i) => {
+	const btn = document.createElement('button');
+	btn.textContent = `Ex. ${i + 1}`;
+	btn.onclick = () => { inputEl.value = scorecard; inputEl.dispatchEvent(new Event('input')); };
+	document.getElementById('dev-examples').appendChild(btn);
+});
+
+fetch('./words.bin').then(r => r.arrayBuffer()).then(buf => {
+	wordsBin = buf;
+	wordsReady = true;
+	statusEl.textContent = `Ready — ${new WordBuffer(buf).wordCount} words loaded.`;
+	updateRunBtn();
 }).catch(e => {
 	statusEl.textContent = `Failed to load data: ${e.message}`;
 	console.error(e);

@@ -1,21 +1,31 @@
 const fs = require('fs');
 const { performance } = require('perf_hooks');
-const { parseWordle, WordBuffer, radixSortDescByInt32 } = require('./lib.js');
+const { parseWordle, WordBuffer } = require('./lib.js');
+
+function run() {
 const examples = require('./examples.js');
 const { scorecard: example, path: myPath } = examples[examples.length - 1];
+
+const memReport = [];
 
 // Start program
 let t0 = performance.now();
 
 // Read words from binary file
+// TODO: what if I store the wordbuffer as a DAG instead of as an array for memory savings.
 const WORDS_BIN = './dist/words.bin';
 const buf = new WordBuffer(fs.readFileSync(WORDS_BIN));
 t0 = t(`Read ${WORDS_BIN} - ${buf.wordCount} words, ${buf.solCount} solutions`, t0);
+trackMem('WordBuffer binary data',    buf.wordCount,         buf._view.byteLength);
+trackMem('WordBuffer._lettersFlat',   buf.wordCount * 5,     buf._lettersFlat.byteLength);
+trackMem('WordBuffer._uniqueCount',   buf.wordCount,         buf._uniqueCount.byteLength);
 
 // Create word to index mapping
 const wordToIdx = new Map();
 for (let i = 0; i < buf.wordCount; i++) wordToIdx.set(buf.word(i), i);
 t0 = t(`Created Word to ID Mapping`, t0);
+// V8 Map: ~56 B per 5-char string key + ~40 B map entry overhead = ~96 B/entry (estimated)
+trackMem('wordToIdx Map (est.)',       wordToIdx.size,        wordToIdx.size * 96);
 
 // Parse the pasted wordle scorecard
 const parsed = parseWordle(example);
@@ -29,83 +39,66 @@ t0 = t(`Day ${parsed.day} = ${buf.word(answerIdx)}`, t0);
 // Score all words against this days answer
 const answerLetters = buf.letters(answerIdx);
 const scores = new Int32Array(buf.wordCount);
-for (let i = 0; i < buf.wordCount; i++) {
-    const s = buf.scoreGuessVs(i, answerLetters);
-    scores[i] = s[0] | (s[1] << 2) | (s[2] << 4) | (s[3] << 6) | (s[4] << 8);
-}
+for (let i = 0; i < buf.wordCount; i++)
+    scores[i] = buf.scoreGuessVsPacked(i, answerLetters);
 t0 = t('Score all words', t0);
+trackMem('scores Int32Array',         scores.length,         scores.byteLength);
 
 // Create pools of possible words for every guess in the given scorecard
-console.log(parsed.guesses)
-const pools = parsed.guesses.map(guess => {
+const guesses = parsed.guesses.slice(0, -1);
+// TODO: consider changing the order of this nested loop (for perf reasons)
+const pools = guesses.map(guess => {
     const pattern = guess[0] | (guess[1] << 2) | (guess[2] << 4) | (guess[3] << 6) | (guess[4] << 8);
     const pool = [];
     for (let i = 0; i < buf.wordCount; i++)
         if (scores[i] === pattern) pool.push(i);
     return pool;
 });
-for (const [index, pool] of pools.slice(0, -1).entries())
-    console.log(`  Pool ${index + 1}: ${pool.length} words`);
-t0 = t('build pools', t0);
+t0 = t(`Build pools:  [${pools.map(p => p.length).join(', ')}]`, t0);
+// JS SMI arrays: ~4 B/element under V8 pointer compression (indices are in SMI range)
+trackMem('pools JS arrays (est.)',    pools.reduce((s,p) => s + p.length, 0), pools.reduce((s,p) => s + p.length * 4, 0));
 
-const preparedPools = buf.preFilterPools(pools, parsed.guesses);
-for (const [i, pool] of preparedPools.slice(0, -1).entries())
-    console.log(`  Pool ${i + 1}: ${pools[i].length} → ${pool.length} after pre-filter`);
-t0 = t('preFilterPools', t0);
-
-const { pools: prunedPools, pathData, guessLen, pathCount } = buf.findValidCandidates(preparedPools, parsed.guesses);
-for (const [index, pool] of prunedPools.slice(0, -1).entries())
-    console.log(`  Pool ${index + 1}: ${pool.length} after DFS prune`);
+// MORE WORK !!!
+const preparedPools = buf.preFilterPools(pools, guesses);
+t0 = t(`Filter pools: [${preparedPools.map(p => p.length).join(', ')}]`, t0);
+trackMem('preparedPools JS arrays (est.)', preparedPools.reduce((s,p) => s + p.length, 0), preparedPools.reduce((s,p) => s + p.length * 4, 0));
+const { pools: prunedPools, dag, guessLen, pathCount } = buf.findValidCandidates(preparedPools, guesses);
 t0 = t('findValidCandidates', t0);
+{
+    const nodeCount = dag.layers.reduce((s, l) => s + l.length, 0);
+    const edgeCount = dag.successors.reduce((s, a) => s + a.length, 0);
+    trackMem('dag.layers Uint16Array[]',     nodeCount,                      nodeCount * 2);
+    trackMem('dag.offsets Uint32Array[]',    nodeCount + dag.offsets.length, (nodeCount + dag.offsets.length) * 4);
+    trackMem('dag.successors Uint16Array[]', edgeCount,                      edgeCount * 2);
+}
 
-const pathScores = new Int32Array(pathCount);
-for (let i = 0; i < pathCount; i++)
-    pathScores[i] = buf.scorePath(pathData.subarray(i * guessLen, i * guessLen + guessLen));
-t0 = t('score paths', t0);
-
-const order = Uint32Array.from({ length: pathCount }, (_, i) => i);
-radixSortDescByInt32(order, pathScores);
-t('sort paths', t0);
-
-console.log(`Done - ${pathCount} paths found`);
-// TODO: do not include the final word indices in the paths[0].path array.
-
-// Save paths as an array of indices into the wordbuffer. 2 bytes per word this way to represent the index instead of 25 bits to represent the word data.
-// or even as another bytebuffer since all paths will be the same length/size.
-// Or even since I have created pools. I can just concatenate those into one longer list.
-// and the paths index is actually the index into those pools. which is going to be smaller. maybe not super small though.
-// since its possible that the pools total size sum is still something over 5000...
-// if I could guarantee it was going to be under 
-// technically 14 bits is all i need to represent a path...
-// but this data is not being transmitted to the user over network so its probably better as 16 bit ints into the original wordbuffer obj.
-
-// the paths array could be 17662 elements long. if each path has 3 words.
-// and each word is 2 bytes, which is an index into the wordBuffer.
-// then we have ~100KB
-// so maybe that size savings is worth it, and even becomes a performance boost.
-// vs. ~260KB if each letter was saved as 1 byte each. in reality it probably uses 
-// much more memory to represent these string arrays in JavaScript.
+const bestScore = buf.computeDagScores(dag);
+t0 = t('computeDagScores', t0);
+trackMem('bestScore Float64Array[]', dag.layers.reduce((s, l) => s + l.length, 0), dag.layers.reduce((s, l) => s + l.length, 0) * 8);
 
 const myPathIndices = myPath.map(w => wordToIdx.get(w));
-const myPathScore   = buf.scorePath(myPathIndices);
-let myPathDataIdx = -1;
-for (let i = 0; i < pathCount; i++) {
-	const o = i * guessLen;
-	let match = true;
-	for (let j = 0; j < guessLen; j++)
-		if (pathData[o + j] !== myPathIndices[j]) { match = false; break; }
-	if (match) { myPathDataIdx = i; break; }
-}
-const myPathRank = myPathDataIdx === -1 ? -1 : order.indexOf(myPathDataIdx) + 1;
-console.log(`Mine: ${myPath.join(' → ')} (score: ${(myPathScore / 1000).toFixed(2)}, rank: ${myPathRank <= 0 ? 'not found' : '#' + myPathRank})`);
+let myPathScoreFloat = 0;
+for (let k = 0; k < guessLen; k++) myPathScoreFloat += buf._nodeScore(myPathIndices[k], k);
+const myPathScore = Math.round(myPathScoreFloat * 1000);
+const myPathRank  = 1 + buf.dagCountAbove(dag, bestScore, myPathScore);
+t0 = t('dagCountAbove (myPath rank)', t0);
+console.log(`Mine: ${myPath.join(' → ')} (score: ${(myPathScore / 1000).toFixed(2)}, rank: #${myPathRank})`);
 
-const topPaths = 10;
-console.log(`Paths (${pathCount}) - top ${topPaths}:`);
-for (let rank = 0; rank < topPaths; rank++) {
-	const i = order[rank];
-	const o = i * guessLen;
-	const words = Array.from({ length: guessLen }, (_, j) => buf.word(pathData[o + j]));
-	console.log(`  ${words.join(' → ')} (score: ${(pathScores[i] / 1000).toFixed(2)})`);
+const K = 10;
+const topPathResults = buf.dagTopK(dag, bestScore, K);
+t0 = t(`dagTopK (top ${K})`, t0);
+console.log(`Paths (${pathCount}) - top ${K}:`);
+for (const { score, path } of topPathResults) {
+    const words = Array.from(path, wi => buf.word(wi));
+    console.log(`  ${words.join(' → ')} (score: ${(score / 1000).toFixed(2)})`);
+}
+
+console.log('\nMemory (structures > 1 KB):');
+const nameW = Math.max(...memReport.map(r => r.name.length));
+for (const { name, elements, bytes } of memReport) {
+	const kb = (bytes / 1024).toFixed(1).padStart(8);
+	const el = elements.toLocaleString().padStart(10);
+	console.log(`  ${name.padEnd(nameW)}  ${el} elements  ${kb} KB`);
 }
 
 // for (let pos = 0; pos < guessLen; pos++) {
@@ -125,6 +118,10 @@ for (let rank = 0; rank < topPaths; rank++) {
 function t(label, since) {
 	console.log(`  [${label}] ${(performance.now() - since).toFixed(1)}ms`);
 	return performance.now();
+}
+
+function trackMem(name, elements, bytes) {
+	if (bytes >= 1024) memReport.push({ name, elements, bytes });
 }
 
 // // --- Pool 1 size analysis for single-tile first guesses ---
@@ -158,26 +155,7 @@ function t(label, since) {
 // 		console.log(`  ${label}: ${size}`);
 // }
 
-// --- Pinned word filtering ---
-// const pinnedWords = {
-// 	// 0: myPath[0],
-// 	// 1: 'crane',
-// };
-// if (Object.keys(pinnedWords).length > 0) {
-// 	const { day, guesses } = parseWordle(example);
-// 	const answerIdx = buf.solution(day);
-// 	const pinnedIndices = Object.fromEntries(
-// 		Object.entries(pinnedWords).map(([p, w]) => [p, wordToIdx.get(w)])
-// 	);
-// 	for (const [posStr, wi] of Object.entries(pinnedIndices)) {
-// 		const pos    = parseInt(posStr);
-// 		const actual = buf.scoreGuess(wi, answerIdx);
-// 		if (!actual.every((v, i) => v === guesses[pos][i]))
-// 			console.warn(`Pin warning: "${pinnedWords[posStr]}" at guess ${pos + 1} does not match the tile pattern`);
-// 	}
-// 	paths = paths.filter(({ path }) =>
-// 		Object.entries(pinnedIndices).every(([posStr, wi]) => path[parseInt(posStr)] === wi)
-// 	);
-// 	const pinDesc = Object.entries(pinnedWords).map(([p, w]) => `guess ${parseInt(p) + 1}="${w}"`).join(', ');
-// 	console.log(`Pinned ${pinDesc} → ${paths.length} paths remaining`);
-// }
+} // end run()
+
+if (require.main === module) run();
+module.exports = { run };

@@ -1,19 +1,15 @@
 {
   "name": "reverse-wordle",
-  "version": "1.0.0",
-  "description": "Guess what someone's path was given their wordle scorecard.",
-  "license": "ISC",
-  "author": "Michael Maxwell",
-  "type": "commonjs",
-  "main": "main.js",
   "scripts": {
-    "dev": "node dev.js",
     "build": "node build.js",
+    "dev": "node dev.js",
     "test": "node --test tests/*.test.js",
     "bench": "node --test tests/benchmarks.js"
   },
   "devDependencies": {
     "chokidar": "^5.0.0",
+    "clean-css": "^5.3.3",
+    "serve": "^14.2.6",
     "terser": "^5.46.1"
   }
 }
