@@ -19,10 +19,14 @@ What causes the paths found to be so large in some cases?
 
 ---
 
+let people share links
+
 WebAssembly
 - 2x to 5x performance
 
 creates a graph, sankey diagram
+
+add a stop finding button. useful if its taking too long. when proccessing the form inputs should be disabled?
 
 make a program to parse wordle scores from a discord channel, twitter, etc.
 

@@ -16,3 +16,5 @@ const devExamples = [
 		path: ["thick", "stand"],
 	},
 ];
+
+if (typeof module !== 'undefined') module.exports = devExamples;

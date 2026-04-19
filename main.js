@@ -4,7 +4,7 @@ const { parseWordle, WordBuffer } = require('./lib.js');
 
 function run() {
 const examples = require('./examples.js');
-const { scorecard: example, path: myPath } = examples[examples.length - 1];
+const { scorecard: example, path: myPath } = examples[0];
 
 const memReport = [];
 
