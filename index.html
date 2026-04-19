@@ -15,9 +15,21 @@
         <li>Wordle day <= 1765</li>
     </ul>
 
-	<div>
-		<textarea id="input" rows="10" cols="40" placeholder="Paste your Wordle scorecard here..."></textarea>
+	<div id="mode-selector">
+		<label><input type="radio" name="input-mode" value="paste" checked> Paste scorecard</label>
+		<label><input type="radio" name="input-mode" value="grid-day"> Grid + Day number</label>
+		<label><input type="radio" name="input-mode" value="grid-answer"> Grid + Answer word</label>
 		<span id="parse-status" style="font-size:1.4em;vertical-align:middle;margin-left:8px"></span>
+	</div>
+	<div id="paste-input">
+		<textarea id="input" rows="9" cols="15" placeholder="Paste here"></textarea>
+	</div>
+	<div id="grid-input">
+		<div id="grid"></div>
+		<div id="grid-extras">
+			<label>Day number: <input type="number" id="day-input" min="0" max="1765" placeholder="e.g. 1750"></label>
+			<label>Answer word: <input type="text" id="answer-input" maxlength="5" placeholder="e.g. crane"></label>
+		</div>
 	</div>
 	<div id="dev-examples"></div>
 	<div>

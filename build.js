@@ -5,6 +5,8 @@ const CleanCSS = require('clean-css')
 const ACCEPTED   = require('./scripts/words.js');
 const SOLUTIONS  = require('./scripts/solutions.js');
 
+// TODO: run solutions-gen.js
+
 async function build() {
 	const html       = fs.readFileSync('index.html', 'utf8');
 	const libJs      = fs.readFileSync('lib.js', 'utf8');
@@ -36,6 +38,7 @@ async function build() {
 		.replace('<script src="lib.js"></script>', '')
         .replace('<script src="index.js"></script>', `<script>${minJS}</script>`)
         .replace('<li>Wordle day <= 1765</li>', `<li>Wordle day <= ${SOLUTIONS.length}</li>`)
+        .replace('max="1765"', `max="${SOLUTIONS.length}"`)
         // Strip HTML comments and collapse whitespace
 		.replace(/<!--[\s\S]*?-->/g, '')
 		.replace(/\s+/g, ' ')

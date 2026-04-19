@@ -763,18 +763,19 @@ function radixSortDescByInt32(order, scores) {
 
 // Runs the full analysis pipeline. Returns a JSON-serializable result safe to postMessage
 // from a Web Worker. K controls how many top paths to include (default 25).
-function analyzeWordle(buf, example, K = 25) {
-	const parsed    = parseWordle(example);
-	const answerIdx = buf.solution(parsed.day);
-	if (answerIdx === null) throw new Error(`No answer for day ${parsed.day}`);
+function analyzeWordle(buf, answer, guesses, K = 25) {
+	let answerIdx = -1;
+	for (let i = 0; i < buf.wordCount; i++)
+		if (buf.word(i) === answer) { answerIdx = i; break; }
+	if (answerIdx === -1) throw new Error(`"${answer}" not found in word list`);
 
 	const answerLetters = buf.letters(answerIdx);
 	const scores = new Int32Array(buf.wordCount);
 	for (let i = 0; i < buf.wordCount; i++)
 		scores[i] = buf.scoreGuessVsPacked(i, answerLetters);
 
-	const guesses = parsed.guesses.slice(0, -1);
-	const pools = guesses.map(guess => {
+	const trimmed = guesses.slice(0, -1);
+	const pools = trimmed.map(guess => {
 		const pattern = guess[0] | (guess[1] << 2) | (guess[2] << 4) | (guess[3] << 6) | (guess[4] << 8);
 		const pool = [];
 		for (let i = 0; i < buf.wordCount; i++)
@@ -782,8 +783,8 @@ function analyzeWordle(buf, example, K = 25) {
 		return pool;
 	});
 
-	const prepared   = buf.preFilterPools(pools, guesses);
-	const { dag, guessLen, pathCount } = buf.findValidCandidates(prepared, guesses);
+	const prepared   = buf.preFilterPools(pools, trimmed);
+	const { dag, guessLen, pathCount } = buf.findValidCandidates(prepared, trimmed);
 	const best       = buf.computeDagScores(dag);
 	const pathCounts = buf.dagPathCounts(dag);
 
@@ -801,9 +802,7 @@ function analyzeWordle(buf, example, K = 25) {
 	});
 
 	return {
-		day: parsed.day,
 		answer: buf.word(answerIdx),
-		hardMode: parsed.hardMode,
 		guessLen,
 		pathCount,
 		topPaths,
