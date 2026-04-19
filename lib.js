@@ -36,15 +36,34 @@ function parseWordle(input) {
 	const lines = input.trim().split('\n').map(l => l.trim()).filter(Boolean);
 	const headerMatch = lines[0].match(/^Wordle\s+([\d,]+)\s+(\d+|X)\/(\d+)(\*?)$/i);
 	if (!headerMatch) throw new Error(`Invalid Wordle header: "${lines[0]}"`);
-	const day = parseInt(headerMatch[1].replace(/,/g, ''), 10);
-	const hardMode = headerMatch[4] === '*';
-	const guesses = lines.slice(1).map(row => [...row].map(tile => TILE[tile]));
-	return { day, hardMode, guesses };
-    // TODO: must be 2 to 6 guesses.
-    // must be solved (no X/6)
-    // each guess must include 5 emojis, those emojis must validly map to a
-    //   miss, wrong position, or a correct.
-    // 
+	const day        = parseInt(headerMatch[1].replace(/,/g, ''), 10);
+	const guessCount = headerMatch[2];
+	const maxGuesses = parseInt(headerMatch[3], 10);
+	const hardMode   = headerMatch[4] === '*';
+	const solved     = guessCount !== 'X';
+
+	const guesses = lines.slice(1).map((row, rowIdx) => {
+		const chars = [...row];
+		if (chars.length !== 5)
+			throw new Error(`Guess ${rowIdx + 1} has ${chars.length} tile(s), expected 5`);
+		return chars.map((tile, colIdx) => {
+			if (!(tile in TILE))
+				throw new Error(`Guess ${rowIdx + 1}, position ${colIdx + 1}: unrecognised tile "${tile}"`);
+			return TILE[tile];
+		});
+	});
+
+	const expectedCount = solved ? parseInt(guessCount, 10) : null;
+	if (expectedCount !== null && guesses.length !== expectedCount)
+		throw new Error(`Header says ${expectedCount} guess(es) but found ${guesses.length} row(s)`);
+
+	const lastAllCorrect = guesses.length > 0 && guesses.at(-1).every(t => t === CORRECT);
+	if (solved && !lastAllCorrect)
+		throw new Error(`Header says solved in ${guessCount} but last guess row is not all green`);
+	if (!solved && lastAllCorrect)
+		throw new Error(`Header says failed (X) but last guess row is all green`);
+
+	return { day, hardMode, maxGuesses, solved, guesses };
 }
 
 function emptyConstraints() {

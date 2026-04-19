@@ -4,9 +4,10 @@ const { encodeWordFile } = require('./lib.js');
 const CleanCSS = require('clean-css')
 
 async function build() {
-	const html     = fs.readFileSync('index.html', 'utf8');
-	const libJs    = fs.readFileSync('lib.js', 'utf8');
-	const indexJs  = fs.readFileSync('index.js', 'utf8');
+	const html       = fs.readFileSync('index.html', 'utf8');
+	const libJs      = fs.readFileSync('lib.js', 'utf8');
+	const indexJs    = fs.readFileSync('index.js', 'utf8');
+	const examplesJs = fs.readFileSync('examples.js', 'utf8');
     const css = fs.readFileSync('style.css', 'utf8')
 	const workerJs = fs.readFileSync('worker.js', 'utf8');
 
@@ -17,8 +18,9 @@ async function build() {
 	// Concatenate lib.js + index.js — lib.js globals are available to index.js directly.
 	// lib.js guards module.exports with `if (typeof module !== 'undefined')` so it's safe
 	// to paste into a browser context.
-	const bundle      = [libJs, indexJs].join('\n');
-	const minJS       = (await minify(bundle, { compress: true, mangle: true })).code;
+	const bundle        = [libJs, indexJs].join('\n');
+	const minJS         = (await minify(bundle, { compress: true, mangle: true })).code;
+	const minExamplesJS = (await minify(examplesJs, { compress: true, mangle: false })).code;
     const minCSS = new CleanCSS({ level: 2 }).minify(css).styles
 
 	// Worker gets the same lib.js globals + worker entry point.
@@ -28,6 +30,7 @@ async function build() {
 	let out = html
         .replace('<link rel="stylesheet" href="style.css">', `<style>${minCSS}</style>`)
         .replace('<link rel="icon" href="favicon.png">', `<link rel="icon" href="${faviconUri}">`)
+        .replace('<script src="examples.js"></script>', `<script>${minExamplesJS}</script>`)
 		.replace('<script src="lib.js"></script>', '')
         .replace('<script src="index.js"></script>', `<script>${minJS}</script>`)
         // Strip HTML comments and collapse whitespace

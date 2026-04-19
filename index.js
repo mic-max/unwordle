@@ -70,12 +70,7 @@ function formatResult(r) {
 	return lines.join('\n');
 }
 
-// Dev examples — delete this block when no longer needed
-[
-	`Wordle 1,763 4/6*\n\n⬛⬛🟨⬛⬛\n🟩⬛⬛⬛🟩\n🟩⬛🟩⬛🟩\n🟩🟩🟩🟩🟩`,
-	`Wordle 1,763 6/6*\n\n⬛⬛⬛⬛⬛\n⬛🟨⬛⬛⬛\n⬛⬛🟩⬛🟩\n⬛🟩🟩⬛🟩\n⬛🟩🟩⬛🟩\n🟩🟩🟩🟩🟩`,
-	`Wordle 1,764 4/6*\n\n🟩⬛⬛⬛⬛\n🟩⬛⬛⬛⬛\n🟩🟨⬛⬛⬛\n🟩🟩🟩🟩🟩`,
-].forEach((scorecard, i) => {
+devExamples.forEach(({ scorecard }, i) => {
 	const btn = document.createElement('button');
 	btn.textContent = `Ex. ${i + 1}`;
 	btn.onclick = () => { inputEl.value = scorecard; inputEl.dispatchEvent(new Event('input')); };

@@ -14,7 +14,6 @@ WebAssembly
 - 2x to 5x performance
 
 creates a graph, sankey diagram
-compress the path data into a trie. instead of a list of entire paths!
 
 make a program to parse wordle scores from a discord channel, twitter, etc.
 
@@ -101,30 +100,6 @@ The most practically useful next feature is probably pinning known words — if 
 - the user should also be able to lock these pinned words in place before the computation, in which cases it might actually be possible to compute in a reasonable amount of time.
 
 Make sure we treat letters from the user as lowercase. everything else is lowercase.
-
-I can generate the size of each first pool for every single possible first guess pattern.
-- which is 3^5=243, since each position has 3 options of tiles: green, yellow, grey. 
-- only the all gray, and 1 green in all pos (5 total) and a yellow in all pos (5 total) - so 11 are actually needed?? since these will have the largest values.
-- I can use this to quickly set a threshold on what pool sizes I should actually attempt to compute. (will take less than a minute on my PC)
-```
-Pool 1 sizes by single-tile pattern (largest = most computation):
-  All gray (current): 2339
-  Yellow at position 2: 1433
-  Green  at position 2 (letter 'o'): 931
-  Yellow at position 5: 864
-  Yellow at position 4: 853
-  Yellow at position 3: 707
-  Yellow at position 1: 675
-  Green  at position 3 (letter 'a'): 665
-  Green  at position 5 (letter 'y'): 438
-  Green  at position 1 (letter 't'): 234
-  Green  at position 4 (letter 'd'): 124
-```
-
-cache the allowed word list? as long as it doesn't change. idk if i want to store data on my user's PC.
-
-don't work with strings on the javascript side, instead work with the binary data
-- other than converting user input to strings and the information I want to output from the 5bit format to a user readable string. then i can perform faster binary operations instead of string manipulation work which will be slower.
 
 ## Usage
 
