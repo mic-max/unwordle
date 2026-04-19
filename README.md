@@ -1,3 +1,15 @@
+# UnWordle
+
+## Data Collection
+
+I was able to find the Wordle dictionary by viewing the source of the website and looking for words in the minified source code. In one of the minified JavaScript files there will be a large array of allowed words.
+
+For the wordle solutions I downloaded and parsed the list from <https://www.stadafa.com/2021/09/every-worlde-word-so-far-updated-daily.html>.
+
+I am looking for a way to update the solutions list with each new day's wordle answer as they arrive. Or is there possibly a way to figure it out even earlier than that?
+
+---
+
 WebAssembly
 - 2x to 5x performance
 

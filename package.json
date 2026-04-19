@@ -1,5 +1,5 @@
 {
-  "name": "reverse-wordle",
+  "name": "unwordle",
   "scripts": {
     "build": "node build.js",
     "dev": "node dev.js",
