@@ -74,4 +74,6 @@ async function main() {
 	console.log(`Wrote ${solutions.length} total solutions (${fetched} new) to solutions.js`);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+module.exports = { generateSolutions: main };
+
+if (require.main === module) main().catch(err => { console.error(err); process.exit(1); });

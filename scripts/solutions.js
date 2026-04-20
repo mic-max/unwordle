@@ -1778,5 +1778,6 @@ module.exports = [
   "crock",
   "plume",
   "bring",
-  "puffy"
+  "puffy",
+  "riser"
 ];

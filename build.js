@@ -3,11 +3,12 @@ const { minify } = require('terser');
 const { encodeWordFile } = require('./lib.js');
 const CleanCSS = require('clean-css')
 const ACCEPTED   = require('./scripts/words.js');
-const SOLUTIONS  = require('./scripts/solutions.js');
-
-// TODO: run solutions-gen.js
+const { generateSolutions } = require('./scripts/solutions-gen.js');
 
 async function build() {
+	await generateSolutions();
+	delete require.cache[require.resolve('./scripts/solutions.js')];
+	const SOLUTIONS = require('./scripts/solutions.js');
 	const html       = fs.readFileSync('index.html', 'utf8');
 	const libJs      = fs.readFileSync('lib.js', 'utf8');
 	const indexJs    = fs.readFileSync('index.js', 'utf8');
